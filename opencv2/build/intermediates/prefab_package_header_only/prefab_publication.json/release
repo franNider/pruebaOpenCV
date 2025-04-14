@@ -1,0 +1,17 @@
+{
+  "installationFolder": "C:\\Users\\franc\\AndroidStudioProjects\\openCVprueba2\\opencv2\\build\\intermediates\\prefab_package\\release\\prefab",
+  "gradlePath": ":opencv2",
+  "packageInfo": {
+    "packageName": "opencv2",
+    "packageSchemaVersion": 2,
+    "packageDependencies": [],
+    "modules": [
+      {
+        "moduleName": "opencv_jni_shared",
+        "moduleHeaders": "C:\\Users\\franc\\AndroidStudioProjects\\openCVprueba2\\opencv2\\native\\jni\\include",
+        "moduleExportLibraries": [],
+        "abis": []
+      }
+    ]
+  }
+}
