@@ -23,12 +23,18 @@ import androidx.core.content.ContextCompat;
 import org.opencv.android.OpenCVLoader;
 import org.opencv.android.Utils;
 import org.opencv.core.Mat;
-import org.opencv.core.MatOfRect;
 import org.opencv.core.Rect;
 import org.opencv.core.Scalar;
 import org.opencv.core.Size;
+import org.opencv.dnn.Dnn;
+import org.opencv.dnn.Net;
+import org.opencv.core.Core;
+import org.opencv.core.Point;
+import org.opencv.core.MatOfByte;
+import org.opencv.core.CvType;
+import org.opencv.core.MatOfFloat;
+import org.opencv.core.MatOfInt;
 import org.opencv.imgproc.Imgproc;
-import org.opencv.objdetect.CascadeClassifier;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -39,7 +45,7 @@ public class MainActivity extends AppCompatActivity {
     ImageView imageView;
     Button btnLoadImage, btnDetectFaces;
     Bitmap selectedBitmap;
-    CascadeClassifier faceDetector;
+    Net faceNet;
 
     static final int PICK_IMAGE = 1;
 
@@ -51,14 +57,12 @@ public class MainActivity extends AppCompatActivity {
         btnLoadImage = findViewById(R.id.btnLoadImage);
         btnDetectFaces = findViewById(R.id.btnDetectFaces);
 
-        // Cargar OpenCV
         if (!OpenCVLoader.initDebug()) {
             Toast.makeText(this, "Error cargando OpenCV", Toast.LENGTH_SHORT).show();
         } else {
-            initCascade();
+            loadDnnModel();
         }
 
-        // Botón para cargar imagen desde galería
         btnLoadImage.setOnClickListener(view -> {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
                     != PackageManager.PERMISSION_GRANTED) {
@@ -69,17 +73,15 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Botón para detectar caras
         btnDetectFaces.setOnClickListener(view -> {
-            if (selectedBitmap != null && faceDetector != null) {
-                detectFaces(selectedBitmap);
+            if (selectedBitmap != null && faceNet != null) {
+                detectFacesDnn(selectedBitmap);
             } else {
                 Toast.makeText(this, "Primero carga una imagen", Toast.LENGTH_SHORT).show();
             }
         });
     }
 
-    // Galería
     void openGallery() {
         Intent intent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
         startActivityForResult(intent, PICK_IMAGE);
@@ -93,6 +95,14 @@ public class MainActivity extends AppCompatActivity {
             Uri imageUri = data.getData();
             try {
                 selectedBitmap = MediaStore.Images.Media.getBitmap(this.getContentResolver(), imageUri);
+
+                // Escalar si es muy grande
+                int maxWidth = 1000;
+                if (selectedBitmap.getWidth() > maxWidth) {
+                    float ratio = (float) selectedBitmap.getHeight() / selectedBitmap.getWidth();
+                    selectedBitmap = Bitmap.createScaledBitmap(selectedBitmap, maxWidth, (int) (maxWidth * ratio), true);
+                }
+
                 imageView.setImageBitmap(selectedBitmap);
             } catch (Exception e) {
                 e.printStackTrace();
@@ -101,59 +111,77 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // Inicializar Haar Cascade desde raw/
-    void initCascade() {
+    void loadDnnModel() {
         try {
-            InputStream is = getAssets().open("haarcascade_frontalface_default.xml");
-            File cascadeDir = getDir("cascade", MODE_PRIVATE);
-            File mCascadeFile = new File(cascadeDir, "haarcascade_frontalface_default.xml");
-            FileOutputStream os = new FileOutputStream(mCascadeFile);
+            // Copiar prototxt
+            InputStream isProto = getAssets().open("opencv_face_detector.prototxt");
+            File protoFile = new File(getCacheDir(), "opencv_face_detector.prototxt");
+            FileOutputStream osProto = new FileOutputStream(protoFile);
+            copyStream(isProto, osProto);
 
-            byte[] buffer = new byte[4096];
-            int bytesRead;
-            while ((bytesRead = is.read(buffer)) != -1) {
-                os.write(buffer, 0, bytesRead);
-            }
-            is.close();
-            os.close();
+            // Copiar caffemodel
+            InputStream isModel = getAssets().open("opencv_face_detector.caffemodel");
+            File modelFile = new File(getCacheDir(), "opencv_face_detector.caffemodel");
+            FileOutputStream osModel = new FileOutputStream(modelFile);
+            copyStream(isModel, osModel);
 
-            faceDetector = new CascadeClassifier(mCascadeFile.getAbsolutePath());
-            if (faceDetector.empty()) {
-                faceDetector = null;
-                Toast.makeText(this, "No se pudo cargar el detector", Toast.LENGTH_SHORT).show();
-            }
+            faceNet = Dnn.readNetFromCaffe(protoFile.getAbsolutePath(), modelFile.getAbsolutePath());
+            Log.i("OpenCV", "Modelo DNN cargado exitosamente");
 
         } catch (Exception e) {
-            Log.e("OpenCV", "Error cargando cascade", e);
+            e.printStackTrace();
+            Toast.makeText(this, "Error cargando modelo DNN", Toast.LENGTH_SHORT).show();
         }
     }
 
-    // Detección de rostros
-    void detectFaces(Bitmap bitmap) {
-        Mat mat = new Mat();
-        Utils.bitmapToMat(bitmap, mat);
-        Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2GRAY);
-        Imgproc.equalizeHist(mat, mat);  // mejora contraste
+    void copyStream(InputStream is, FileOutputStream os) throws Exception {
+        byte[] buffer = new byte[4096];
+        int bytesRead;
+        while ((bytesRead = is.read(buffer)) != -1) {
+            os.write(buffer, 0, bytesRead);
+        }
+        is.close();
+        os.close();
+    }
 
-        MatOfRect faces = new MatOfRect();
-        faceDetector.detectMultiScale(mat, faces, 1.1, 5,
-                0, new Size(100, 100), new Size());
+    void detectFacesDnn(Bitmap bitmap) {
+        Mat img = new Mat();
+        Utils.bitmapToMat(bitmap, img);
+        Imgproc.cvtColor(img, img, Imgproc.COLOR_RGBA2RGB);
 
-        Rect[] faceArray = faces.toArray();
-        if (faceArray.length == 0) {
-            Toast.makeText(this, "No se detectaron caras", Toast.LENGTH_SHORT).show();
-            return;
+        // Crear blob
+        Mat blob = Dnn.blobFromImage(img, 1.0, new Size(300, 300),
+                new Scalar(104.0, 177.0, 123.0), false, false);
+
+        faceNet.setInput(blob);
+        Mat detections = faceNet.forward();
+
+        int cols = img.cols();
+        int rows = img.rows();
+        detections = detections.reshape(1, (int) detections.total() / 7);
+
+        int detectionsCount = 0;
+
+        for (int i = 0; i < detections.rows(); i++) {
+            double confidence = detections.get(i, 2)[0];
+            if (confidence > 0.5) {
+                int x1 = (int) (detections.get(i, 3)[0] * cols);
+                int y1 = (int) (detections.get(i, 4)[0] * rows);
+                int x2 = (int) (detections.get(i, 5)[0] * cols);
+                int y2 = (int) (detections.get(i, 6)[0] * rows);
+
+                Imgproc.rectangle(img, new Point(x1, y1), new Point(x2, y2),
+                        new Scalar(0, 255, 0), 3);
+                detectionsCount++;
+            }
         }
 
-        // Dibujar rectángulos
-        Utils.bitmapToMat(bitmap, mat);  // convertir original
-        for (Rect rect : faceArray) {
-            Imgproc.rectangle(mat, rect.tl(), rect.br(), new Scalar(0, 255, 0), 4);
+        if (detectionsCount == 0) {
+            Toast.makeText(this, "No se detectaron rostros", Toast.LENGTH_SHORT).show();
         }
 
-        Bitmap resultBitmap = Bitmap.createBitmap(mat.cols(), mat.rows(), Bitmap.Config.ARGB_8888);
-        Utils.matToBitmap(mat, resultBitmap);
-        imageView.setImageBitmap(resultBitmap);
+        Bitmap result = Bitmap.createBitmap(img.cols(), img.rows(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(img, result);
+        imageView.setImageBitmap(result);
     }
 }
-
